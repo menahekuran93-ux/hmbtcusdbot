@@ -404,7 +404,7 @@ ENDOFFILE
 
 python3 -m py_compile /home/claude/clean_bot.py && echo "SYNTAX OK" || echo "ERROR"
 # Check for any smart quotes
-python3 -c "
+"python3 -c "
 content = open('/home/claude/clean_bot.py', 'rb').read()
 bad = [b'\xe2\x80\x9c', b'\xe2\x80\x9d', b'\xe2\x80\x98', b'\xe2\x80\x99']
 found = any(b in content for b in bad)
