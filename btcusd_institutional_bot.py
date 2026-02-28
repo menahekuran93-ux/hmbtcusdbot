@@ -1,5 +1,5 @@
-open("clean_bot.py", "w") as f:
-    f.write("print('This is my new bot code')"
+with open("clean_bot.py", "w") as f:
+    f.write("print('Bot is running')")
 import os
 import asyncio
 import logging
