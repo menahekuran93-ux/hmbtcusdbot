@@ -409,4 +409,4 @@ content = open('/home/claude/clean_bot.py', 'rb').read()
 bad = [b'\xe2\x80\x9c', b'\xe2\x80\x9d', b'\xe2\x80\x98', b'\xe2\x80\x99']
 found = any(b in content for b in bad)
 print('Smart quotes found:', found)
-"
+
