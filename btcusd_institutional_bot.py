@@ -1,4 +1,5 @@
-cat > /home/claude/clean_bot.py << 'ENDOFFILE'
+open("clean_bot.py", "w") as f:
+    f.write("print('This is my new bot code')"
 import os
 import asyncio
 import logging
