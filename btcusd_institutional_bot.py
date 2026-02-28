@@ -13,7 +13,7 @@ from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # --- 1. CONFIGURATION (US-FIXED) ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8664798073:AAEwX0DnpjTccGW3IUMWi-hLEMUuclffzl4")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8664798073:AAESFLVg-b2eLYWOQ0xQ6pVdfz-RvJV54J8")
 CHAT_ID = os.getenv("CHAT_ID", "6389282895")
 SYMBOL = "btcusdt"
 TF = "15m"
