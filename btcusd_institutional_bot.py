@@ -403,7 +403,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ENDOFFILE
 
-python3 -m py_compile /home/claude/clean_bot.py && echo "SYNTAX OK" || echo "ERROR"
+import py_compile
+try:
+    py_compile.compile('clean_bot.py')
+    print("SUCCESS")
+except:
+    print("ERROR")
+
 # Check for any smart quotes
 "python3 -c "
 content = open('/home/claude/clean_bot.py', 'rb').read()
