@@ -11,16 +11,15 @@ import websockets
 from telegram import Bot
 
 # ==============================
-# CONFIGURATION (US COMPATIBLE)
+# CONFIGURATION
 # ==============================
-# Hardcoded as requested for your specific Railway deployment
 TELEGRAM_TOKEN = "8664798073:AAESFLVg-b2eLYWOQ0xQ6pVdfz-RvJV54J8"
 CHAT_ID = "6389282895"
 
 SYMBOL = "btcusdt"
 TIMEFRAME = "15m"
 
-# Using .us to bypass the 451 legal block on Railway's US-based servers
+# Using .us to bypass the 451 regional block on Railway's servers
 BINANCE_WS = (
     f"wss://stream.binance.us:9443/stream?"
     f"streams={SYMBOL}@depth@100ms/"
@@ -63,7 +62,6 @@ bot = Bot(token=TELEGRAM_TOKEN)
 # ==============================
 
 def update_orderbook(data):
-    """Processes incremental depth updates and tracks persistent walls."""
     now = time.time()
     for side_code, side_key in [("b", "bids"), ("a", "asks")]:
         for update in data.get(side_code, []):
@@ -80,20 +78,17 @@ def update_orderbook(data):
                     else:
                         state.wall_tracker[price]["size"] = size
 
-    # Cleanup: Remove walls that no longer meet the BTC threshold
     for p in list(state.wall_tracker.keys()):
         side = state.wall_tracker[p]["side"]
         if state.orderbook[side].get(p, 0) < MIN_WALL_SIZE:
             del state.wall_tracker[p]
 
 def get_confluence():
-    """Calculates confluence score based on Walls, CVD, and Absorption."""
     now = time.time()
     score = 0
     active_side = None
     wall_ref_price = None
 
-    # 1. Wall Persistence Check
     for p, info in state.wall_tracker.items():
         if now - info["start"] >= WALL_PERSIST_SECONDS:
             score += 1
@@ -101,7 +96,6 @@ def get_confluence():
             wall_ref_price = p
             break 
 
-    # 2. CVD Z-Score (Institutional Momentum)
     if len(state.cvd_history) > 30:
         arr = np.array(state.cvd_history)
         z = (arr[-1] - arr.mean()) / (arr.std() + 1e-9)
@@ -109,7 +103,6 @@ def get_confluence():
            (z < -CVD_Z_THRESHOLD and active_side == "short"):
             score += 1
 
-    # 3. Absorption Logic (High volume, low price movement)
     if len(state.delta_history) > 20:
         recent_delta = sum(list(state.delta_history)[-20:])
         recent_prices = list(state.price_history)[-20:]
@@ -120,8 +113,6 @@ def get_confluence():
     return score, active_side, wall_ref_price
 
 def build_dynamic_rr(entry, direction, wall_price):
-    """Generates SL behind the wall and calculates TP based on 1:4 RR."""
-    # Place SL 0.05% behind the physical wall for protection
     buffer = entry * 0.0005 
     if direction == "long":
         sl = (wall_price - buffer) if wall_price else (entry * 0.995)
@@ -141,7 +132,6 @@ def build_dynamic_rr(entry, direction, wall_price):
     )
 
 async def evaluate_and_alert():
-    """Sends Telegram alert if confluence threshold is met."""
     now = time.time()
     if now - state.last_alert_time < ALERT_COOLDOWN:
         return
@@ -178,7 +168,6 @@ async def stream():
             if "depth" in stream_name:
                 update_orderbook(payload)
             elif "aggTrade" in stream_name:
-                # Update Price/CVD Stats
                 p, q = float(payload["p"]), float(payload["q"])
                 delta = -q if payload["m"] else q
                 
@@ -188,7 +177,6 @@ async def stream():
                 state.price_history.append(p)
                 state.cvd_history.append(state.cvd)
                 
-                # Check for trade setups
                 await evaluate_and_alert()
 
 async def main():
