@@ -17,13 +17,12 @@ TELEGRAM_TOKEN = "8664798073:AAESFLVg-b2eLYWOQ0xQ6pVdfz-RvJV54J8"
 CHAT_ID = "6389282895"
 
 SYMBOL = "btcusdt"
-# Using Binance.US to stay connected on Railway
 BINANCE_WS = f"wss://stream.binance.us:9443/stream?streams={SYMBOL}@depth@100ms/{SYMBOL}@aggTrade"
 
-# Timing Settings
+# Timing Constants
 RR_RATIO = 4
 ALERT_COOLDOWN = 300 
-HEARTBEAT_INTERVAL = 10800  # 3 Hours
+HEARTBEAT_INTERVAL = 10800  # 3 Hours (10800 seconds)
 
 # Institutional Logic
 MIN_WALL_SIZE = 20.0  
@@ -40,30 +39,26 @@ class BotState:
     cvd: float = 0.0
     cvd_history: deque = field(default_factory=lambda: deque(maxlen=200))
     price_history: deque = field(default_factory=lambda: deque(maxlen=200))
-    delta_history: deque = field(default_factory=lambda: deque(maxlen=200))
     last_price: float = 0.0
     last_alert_time: float = 0.0
     last_heartbeat_time: float = time.time()
 
 state = BotState()
 
-# ==============================
-# 2. ANALYSIS LOGIC
-# ==============================
-
+# (Analysis Logic functions - update_orderbook and get_confluence go here)
 def update_orderbook(data):
     now = time.time()
     for side_code, side_key in [("b", "bids"), ("a", "asks")]:
         for update in data.get(side_code, []):
-            price, size = float(update[0]), float(update[1])
-            if size == 0:
-                state.orderbook[side_key].pop(price, None)
-                state.wall_tracker.pop(price, None)
+            p, s = float(update[0]), float(update[1])
+            if s == 0:
+                state.orderbook[side_key].pop(p, None)
+                state.wall_tracker.pop(p, None)
             else:
-                state.orderbook[side_key][price] = size
-                if size >= MIN_WALL_SIZE:
-                    if price not in state.wall_tracker:
-                        state.wall_tracker[price] = {"start": now, "side": side_key}
+                state.orderbook[side_key][p] = s
+                if s >= MIN_WALL_SIZE:
+                    if p not in state.wall_tracker:
+                        state.wall_tracker[p] = {"start": now, "side": side_key}
     
     for p in list(state.wall_tracker.keys()):
         side = state.wall_tracker[p]["side"]
@@ -73,23 +68,19 @@ def update_orderbook(data):
 def get_confluence():
     now = time.time()
     score = 0
-    direction, wall_price = None, None
+    dir, wp = None, None
     for p, info in state.wall_tracker.items():
         if now - info["start"] >= WALL_PERSIST_SECONDS:
             score += 1
-            direction = "long" if info["side"] == "bids" else "short"
-            wall_price = p
+            dir = "long" if info["side"] == "bids" else "short"
+            wp = p
             break 
     if len(state.cvd_history) > 30:
         arr = np.array(state.cvd_history)
         z = (arr[-1] - arr.mean()) / (arr.std() + 1e-9)
-        if (z > 2.0 and direction == "long") or (z < -2.0 and direction == "short"):
+        if (z > 2.0 and dir == "long") or (z < -2.0 and dir == "short"):
             score += 1
-    return score, direction, wall_price
-
-# ==============================
-# 3. STREAMING & NOTIFICATIONS
-# ==============================
+    return score, dir, wp
 
 async def stream(bot_instance):
     async with websockets.connect(BINANCE_WS) as ws:
@@ -102,10 +93,9 @@ async def stream(bot_instance):
             if "depth" in stream_name:
                 update_orderbook(payload)
             elif "aggTrade" in stream_name:
-                p, q = float(payload["p"]), float(payload["q"])
-                delta = -q if payload["m"] else q
+                p = float(payload["p"])
                 state.last_price = p
-                state.cvd += delta
+                state.cvd += (-float(payload["q"]) if payload["m"] else float(payload["q"]))
                 state.cvd_history.append(state.cvd)
                 state.price_history.append(p)
 
@@ -114,48 +104,33 @@ async def stream(bot_instance):
                 # --- 🕒 SILENT HEARTBEAT (3 Hours) ---
                 if now - state.last_heartbeat_time > HEARTBEAT_INTERVAL:
                     try:
-                        heartbeat_msg = (
-                            f"🕒 **3-Hour Status Update**\n"
-                            f"Current Price: ${p:,.2f}\n"
-                            f"Status: Monitoring for 20 BTC Walls..."
-                        )
+                        hb_msg = f"🕒 **3-Hour Pulse**\nBTC Price: ${p:,.2f}\nStatus: Listening for Walls..."
                         await bot_instance.send_message(
                             chat_id=CHAT_ID, 
-                            text=heartbeat_msg,
-                            disable_notification=True, # NO SOUND
+                            text=hb_msg,
+                            disable_notification=True, # Sends SILENTLY
                             parse_mode="Markdown"
                         )
                         state.last_heartbeat_time = now
-                        log.info("Heartbeat sent.")
                     except: pass
 
                 # --- 🏛 LOUD TRADE SIGNAL ---
                 if now - state.last_alert_time > ALERT_COOLDOWN:
                     score, direction, wall_p = get_confluence()
                     if score >= CONFLUENCE_THRESHOLD and direction:
-                        msg = f"🏛 **INSTITUTIONAL SIGNAL**\nDir: {direction.upper()} at ${p:,.2f}"
+                        sig_msg = f"🏛 **INSTITUTIONAL SIGNAL**\nDir: {direction.upper()} at ${p:,.2f}"
                         try:
                             await bot_instance.send_message(
                                 chat_id=CHAT_ID, 
-                                text=msg, 
-                                disable_notification=False # LOUD SOUND
+                                text=sig_msg, 
+                                disable_notification=False # Sends LOUDLY
                             )
                             state.last_alert_time = now
-                            log.info(f"Signal alert sent: {direction}")
                         except: pass
 
 async def main():
     async with Bot(token=TELEGRAM_TOKEN) as bot_instance:
         log.info("🤖 Bot Ready.")
-        # Startup message (Silent)
-        try:
-            await bot_instance.send_message(
-                chat_id=CHAT_ID, 
-                text="🚀 **Bot Online!**\nNow monitoring every 3 hours silently.",
-                disable_notification=True
-            )
-        except: pass
-
         while True:
             try:
                 await stream(bot_instance)
