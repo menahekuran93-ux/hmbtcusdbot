@@ -11,15 +11,16 @@ import websockets
 from telegram import Bot
 
 # ==============================
-# CONFIGURATION
+# 1. CONFIGURATION
 # ==============================
+# Using the credentials you provided
 TELEGRAM_TOKEN = "8664798073:AAESFLVg-b2eLYWOQ0xQ6pVdfz-RvJV54J8"
 CHAT_ID = "6389282895"
 
 SYMBOL = "btcusdt"
 TIMEFRAME = "15m"
 
-# Using .us to bypass the 451 regional block on Railway's servers
+# Binance.US endpoint to bypass Railway's regional IP blocks (Error 451)
 BINANCE_WS = (
     f"wss://stream.binance.us:9443/stream?"
     f"streams={SYMBOL}@depth@100ms/"
@@ -27,10 +28,9 @@ BINANCE_WS = (
     f"{SYMBOL}@kline_{TIMEFRAME}"
 )
 
+# Institutional Logic Parameters
 RR_RATIO = 4
 ALERT_COOLDOWN = 300
-
-# Institutional thresholds
 MIN_WALL_SIZE = 20.0  
 WALL_PERSIST_SECONDS = 12
 CVD_Z_THRESHOLD = 2.0
@@ -41,7 +41,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 log = logging.getLogger("institutional_bot")
 
 # ==============================
-# STATE MANAGEMENT
+# 2. STATE MANAGEMENT
 # ==============================
 @dataclass
 class BotState:
@@ -55,18 +55,17 @@ class BotState:
     last_alert_time: float = 0.0
 
 state = BotState()
-bot = Bot(token=TELEGRAM_TOKEN)
 
 # ==============================
-# CORE ENGINES
+# 3. ANALYSIS ENGINES
 # ==============================
 
 def update_orderbook(data):
+    """Tracks limit orders and persistent institutional walls."""
     now = time.time()
     for side_code, side_key in [("b", "bids"), ("a", "asks")]:
         for update in data.get(side_code, []):
             price, size = float(update[0]), float(update[1])
-            
             if size == 0:
                 state.orderbook[side_key].pop(price, None)
                 state.wall_tracker.pop(price, None)
@@ -74,35 +73,38 @@ def update_orderbook(data):
                 state.orderbook[side_key][price] = size
                 if size >= MIN_WALL_SIZE:
                     if price not in state.wall_tracker:
-                        state.wall_tracker[price] = {"start": now, "side": side_key, "size": size}
-                    else:
-                        state.wall_tracker[price]["size"] = size
+                        state.wall_tracker[price] = {"start": now, "side": side_key}
 
+    # Clean up walls that dropped below size
     for p in list(state.wall_tracker.keys()):
         side = state.wall_tracker[p]["side"]
         if state.orderbook[side].get(p, 0) < MIN_WALL_SIZE:
             del state.wall_tracker[p]
 
 def get_confluence():
+    """Calculates if multiple institutional signals align."""
     now = time.time()
     score = 0
-    active_side = None
-    wall_ref_price = None
+    direction = None
+    wall_price = None
 
+    # Signal 1: Persistent Wall
     for p, info in state.wall_tracker.items():
         if now - info["start"] >= WALL_PERSIST_SECONDS:
             score += 1
-            active_side = "long" if info["side"] == "bids" else "short"
-            wall_ref_price = p
+            direction = "long" if info["side"] == "bids" else "short"
+            wall_price = p
             break 
 
+    # Signal 2: CVD Z-Score (Institutional Momentum)
     if len(state.cvd_history) > 30:
         arr = np.array(state.cvd_history)
         z = (arr[-1] - arr.mean()) / (arr.std() + 1e-9)
-        if (z > CVD_Z_THRESHOLD and active_side == "long") or \
-           (z < -CVD_Z_THRESHOLD and active_side == "short"):
+        if (z > CVD_Z_THRESHOLD and direction == "long") or \
+           (z < -CVD_Z_THRESHOLD and direction == "short"):
             score += 1
 
+    # Signal 3: Price Absorption
     if len(state.delta_history) > 20:
         recent_delta = sum(list(state.delta_history)[-20:])
         recent_prices = list(state.price_history)[-20:]
@@ -110,54 +112,34 @@ def get_confluence():
         if abs(recent_delta) > ABSORPTION_DELTA_THRESHOLD and price_range < 20:
             score += 1
 
-    return score, active_side, wall_ref_price
+    return score, direction, wall_price
 
-def build_dynamic_rr(entry, direction, wall_price):
+def build_alert_text(entry, direction, wall_price, score):
+    """Formats the Telegram message with Dynamic SL/TP."""
     buffer = entry * 0.0005 
     if direction == "long":
         sl = (wall_price - buffer) if wall_price else (entry * 0.995)
-        risk = entry - sl
-        tp = entry + (risk * RR_RATIO)
+        tp = entry + ((entry - sl) * RR_RATIO)
     else:
         sl = (wall_price + buffer) if wall_price else (entry * 1.005)
-        risk = sl - entry
-        tp = entry - (risk * RR_RATIO)
+        tp = entry - ((sl - entry) * RR_RATIO)
 
     return (
-        f"\n🎯 **Direction:** {direction.upper()}"
-        f"\n💵 **Entry:** ${entry:,.2f}"
-        f"\n🛡️ **SL (Behind Wall):** ${sl:,.2f}"
-        f"\n💰 **TP (Target):** ${tp:,.2f}"
-        f"\n⚖️ **RR Ratio:** 1:{RR_RATIO}"
+        "🏛 **INSTITUTIONAL CONFLUENCE DETECTED**\n"
+        f"Confidence Score: {score}/3\n\n"
+        f"🎯 **Direction:** {direction.upper()}\n"
+        f"💵 **Entry:** ${entry:,.2f}\n"
+        f"🛡️ **SL (Wall Shield):** ${sl:,.2f}\n"
+        f"💰 **TP (Target):** ${tp:,.2f}\n"
+        f"⚖️ **RR Ratio:** 1:{RR_RATIO}"
     )
 
-async def evaluate_and_alert():
-    now = time.time()
-    if now - state.last_alert_time < ALERT_COOLDOWN:
-        return
-
-    score, direction, wall_price = get_confluence()
-
-    if score >= CONFLUENCE_THRESHOLD and direction:
-        message = (
-            "🏛 **INSTITUTIONAL CONFLUENCE DETECTED**\n"
-            f"Confidence Score: {score}/3\n"
-            "Signals: Wall Persistence + CVD Momentum"
-        )
-        message += build_dynamic_rr(state.last_price, direction, wall_price)
-
-        try:
-            await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="Markdown")
-            state.last_alert_time = now
-            log.info(f"🚀 Alert Sent: {direction.upper()} at {state.last_price}")
-        except Exception as e:
-            log.error(f"Telegram Failed: {e}")
-
 # ==============================
-# MAIN CONNECTION LOOP
+# 4. EXECUTION & STREAMING
 # ==============================
 
-async def stream():
+async def stream(bot_instance):
+    """Main WebSocket loop for data ingestion."""
     async with websockets.connect(BINANCE_WS) as ws:
         log.info("✅ Connected to Binance.US Institutional Feed")
         async for message in ws:
@@ -177,15 +159,29 @@ async def stream():
                 state.price_history.append(p)
                 state.cvd_history.append(state.cvd)
                 
-                await evaluate_and_alert()
+                # Check for alerts
+                now = time.time()
+                if now - state.last_alert_time > ALERT_COOLDOWN:
+                    score, direction, wall_p = get_confluence()
+                    if score >= CONFLUENCE_THRESHOLD and direction:
+                        msg = build_alert_text(p, direction, wall_p, score)
+                        try:
+                            await bot_instance.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+                            state.last_alert_time = now
+                            log.info(f"🚀 Alert Sent: {direction.upper()} at {p}")
+                        except Exception as e:
+                            log.error(f"Telegram Send Error: {e}")
 
 async def main():
-    while True:
-        try:
-            await stream()
-        except Exception as e:
-            log.error(f"❌ Connection Interrupted: {e}. Retrying in 5s...")
-            await asyncio.sleep(5)
+    """Initialize bot session and maintain connection."""
+    async with Bot(token=TELEGRAM_TOKEN) as bot_instance:
+        log.info("🤖 Bot Session Initialized.")
+        while True:
+            try:
+                await stream(bot_instance)
+            except Exception as e:
+                log.error(f"❌ Connection Error: {e}. Reconnecting in 5s...")
+                await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())
