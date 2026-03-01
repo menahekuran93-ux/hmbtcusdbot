@@ -13,14 +13,13 @@ from telegram import Bot
 # ==============================
 # 1. CONFIGURATION
 # ==============================
-# Using the credentials you provided
 TELEGRAM_TOKEN = "8664798073:AAESFLVg-b2eLYWOQ0xQ6pVdfz-RvJV54J8"
 CHAT_ID = "6389282895"
 
 SYMBOL = "btcusdt"
 TIMEFRAME = "15m"
 
-# Binance.US endpoint to bypass Railway's regional IP blocks (Error 451)
+# Binance.US endpoint to bypass Railway's regional blocks (Error 451)
 BINANCE_WS = (
     f"wss://stream.binance.us:9443/stream?"
     f"streams={SYMBOL}@depth@100ms/"
@@ -119,10 +118,12 @@ def build_alert_text(entry, direction, wall_price, score):
     buffer = entry * 0.0005 
     if direction == "long":
         sl = (wall_price - buffer) if wall_price else (entry * 0.995)
-        tp = entry + ((entry - sl) * RR_RATIO)
+        risk = entry - sl
+        tp = entry + (risk * RR_RATIO)
     else:
         sl = (wall_price + buffer) if wall_price else (entry * 1.005)
-        tp = entry - ((sl - entry) * RR_RATIO)
+        risk = sl - entry
+        tp = entry - (risk * RR_RATIO)
 
     return (
         "🏛 **INSTITUTIONAL CONFLUENCE DETECTED**\n"
@@ -174,8 +175,16 @@ async def stream(bot_instance):
 
 async def main():
     """Initialize bot session and maintain connection."""
+    # The 'async with' ensures the bot is properly initialized to send messages
     async with Bot(token=TELEGRAM_TOKEN) as bot_instance:
         log.info("🤖 Bot Session Initialized.")
+        
+        # SEND STARTUP NOTIFICATION
+        try:
+            await bot_instance.send_message(chat_id=CHAT_ID, text="✅ **Institutional Bot Online**\nMonitoring BTC/USDT...")
+        except:
+            pass
+
         while True:
             try:
                 await stream(bot_instance)
